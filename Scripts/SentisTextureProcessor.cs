@@ -77,8 +77,9 @@ namespace AiUpscaler.Runtime
                     {
                         patchOutW = outputTensor.shape[2];
                         patchOutH = outputTensor.shape[1];
-                        // Sentis RenderToTexture requires Rank 4 (NCHW). Reshape CHW to 1CHW.
-                        finalOutputTensor = outputTensor.Reshape(new TensorShape(1, outputTensor.shape[0], outputTensor.shape[1], outputTensor.shape[2])) as TensorFloat;
+                        // Sentis 1.2.x - Use ShallowReshape to convert Rank 3 (CHW) to Rank 4 (1CHW)
+                        var newShape = new TensorShape(1, outputTensor.shape[0], outputTensor.shape[1], outputTensor.shape[2]);
+                        finalOutputTensor = outputTensor.ShallowReshape(newShape) as TensorFloat;
                     }
                     else
                     {
