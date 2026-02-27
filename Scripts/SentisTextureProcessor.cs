@@ -41,18 +41,30 @@ namespace AiUpscaler.Runtime
             finalRT.enableRandomWrite = true;
             finalRT.Create();
 
+            // Tiling Settings with Overlap
+            int padding = 12; // Context padding on each side
+            int stepSize = tileSize - (padding * 2);
+            if (stepSize <= 0) stepSize = tileSize / 2;
+
             // Temp Texture to extract patches
             Texture2D patchTex = new Texture2D(tileSize, tileSize, TextureFormat.RGBA32, false);
 
-            for (int y = 0; y < inHeight; y += tileSize)
+            for (int y = -padding; y < inHeight; y += stepSize)
             {
-                for (int x = 0; x < inWidth; x += tileSize)
+                for (int x = -padding; x < inWidth; x += stepSize)
                 {
-                    int currentW = Mathf.Min(tileSize, inWidth - x);
-                    int currentH = Mathf.Min(tileSize, inHeight - y);
+                    // 1. Extract Patch with Padding
+                    // Clamp to source image boundaries
+                    int extractX = Mathf.Clamp(x, 0, inWidth - tileSize);
+                    if (inWidth < tileSize) extractX = 0;
+                    
+                    int extractY = Mathf.Clamp(y, 0, inHeight - tileSize);
+                    if (inHeight < tileSize) extractY = 0;
 
-                    // 1. Extract Patch
-                    Color[] pixels = inputTexture.GetPixels(x, y, currentW, currentH);
+                    int currentW = Mathf.Min(tileSize, inWidth);
+                    int currentH = Mathf.Min(tileSize, inHeight);
+
+                    Color[] pixels = inputTexture.GetPixels(extractX, extractY, currentW, currentH);
                     patchTex.Reinitialize(currentW, currentH);
                     patchTex.SetPixels(pixels);
                     patchTex.Apply();
@@ -64,10 +76,9 @@ namespace AiUpscaler.Runtime
                     _engine.Execute(inputTensor);
                     TensorFloat outputTensor = _engine.PeekOutput() as TensorFloat;
 
-                    // 4. To Temp RT
+                    // 4. Handle Output Tensor Rank (ShallowReshape for 1.2.x compatibility)
                     int patchOutW, patchOutH;
                     TensorFloat finalOutputTensor = outputTensor;
-
                     if (outputTensor.shape.rank == 4)
                     {
                         patchOutW = outputTensor.shape[3];
@@ -77,24 +88,40 @@ namespace AiUpscaler.Runtime
                     {
                         patchOutW = outputTensor.shape[2];
                         patchOutH = outputTensor.shape[1];
-                        // Sentis 1.2.x - Use ShallowReshape to convert Rank 3 (CHW) to Rank 4 (1CHW)
                         var newShape = new TensorShape(1, outputTensor.shape[0], outputTensor.shape[1], outputTensor.shape[2]);
                         finalOutputTensor = outputTensor.ShallowReshape(newShape) as TensorFloat;
                     }
-                    else
-                    {
-                        Debug.LogError($"[AI Upscaler] Unexpected output tensor rank: {outputTensor.shape.rank}. Expected 3 or 4.");
-                        continue;
-                    }
+                    else continue;
 
                     RenderTexture patchRT = new RenderTexture(patchOutW, patchOutH, 0, RenderTextureFormat.ARGB32);
                     patchRT.enableRandomWrite = true;
                     patchRT.Create();
-
                     TextureConverter.RenderToTexture(finalOutputTensor, patchRT);
 
-                    // 5. Blit to Final RT
-                    Graphics.CopyTexture(patchRT, 0, 0, 0, 0, patchOutW, patchOutH, finalRT, 0, 0, Mathf.RoundToInt(x * scale), Mathf.RoundToInt(y * scale));
+                    // 5. Calculate "Safe" Commit Region (Crop the padding)
+                    float outScale = (float)patchOutW / currentW;
+                    
+                    // Region in the upscaled patch to copy
+                    int offsetX = (x < 0) ? 0 : Mathf.RoundToInt(padding * outScale);
+                    int offsetY = (y < 0) ? 0 : Mathf.RoundToInt(padding * outScale);
+                    
+                    int copyW = Mathf.RoundToInt(stepSize * outScale);
+                    int copyH = Mathf.RoundToInt(stepSize * outScale);
+
+                    // Destination in the big texture
+                    int destX = Mathf.RoundToInt(Mathf.Max(0, x + padding) * outScale);
+                    int destY = Mathf.RoundToInt(Mathf.Max(0, y + padding) * outScale);
+
+                    // Cleanup for final edges
+                    if (destX + copyW > outWidth) copyW = outWidth - destX;
+                    if (destY + copyH > outHeight) copyH = outHeight - destY;
+                    if (offsetX + copyW > patchOutW) copyW = patchOutW - offsetX;
+                    if (offsetY + copyH > patchOutH) copyH = patchOutH - offsetY;
+
+                    if (copyW > 0 && copyH > 0)
+                    {
+                        Graphics.CopyTexture(patchRT, 0, 0, offsetX, offsetY, copyW, copyH, finalRT, 0, 0, destX, destY);
+                    }
                     
                     patchRT.Release();
                     Object.DestroyImmediate(patchRT);
