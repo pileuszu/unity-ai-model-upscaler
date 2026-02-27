@@ -24,30 +24,58 @@ namespace AiUpscaler.Runtime
         {
             if (inputTexture == null) return null;
 
-            // 1. Convert Texture to Tensor
-            // Sentis expects values usually normalized or in specific shapes.
-            // For ESRGAN, it's often [1, 3, H, W]
-            using TensorFloat inputTensor = TextureConverter.ToTensor(inputTexture, inputTexture.width, inputTexture.height, 3);
+            // 1. Detect Model Input Shape
+            var input = _runtimeModel.inputs[0];
+            int modelWidth = input.shape[3].IsMax ? inputTexture.width : input.shape[3].value;
+            int modelHeight = input.shape[2].IsMax ? inputTexture.height : input.shape[2].value;
 
-            // 2. Run Inference
-            _engine.Execute(inputTensor);
+            // Handle cases where model shape is fixed (e.g., 128x128)
+            if (modelWidth <= 0) modelWidth = 512; // Fallback
+            if (modelHeight <= 0) modelHeight = 512;
 
-            // 3. Get Result Tensor
+            Debug.Log($"[AI Upscaler] Model Input Shape: {modelWidth}x{modelHeight}. Upscaling from {inputTexture.width}x{inputTexture.height}");
+
+            // 2. Convert Texture to Tensor (Auto-resizes if dimensions differ)
+            using TensorFloat inputTensor = TextureConverter.ToTensor(inputTexture, modelWidth, modelHeight, 3);
+
+            // 3. Run Inference
+            try 
+            {
+                _engine.Execute(inputTensor);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[AI Upscaler] Inference Failed: {e.Message}\nTry a smaller texture or a lighter model.");
+                return null;
+            }
+
+            // 4. Get Result Tensor
             TensorFloat outputTensor = _engine.PeekOutput() as TensorFloat;
+            if (outputTensor == null) return null;
 
-            // 4. Convert Tensor back to Texture
-            // We need to calculate the output dimensions based on the scale
-            int outWidth = Mathf.RoundToInt(inputTexture.width * scale);
-            int outHeight = Mathf.RoundToInt(inputTexture.height * scale);
+            // Calculate output dimensions based on output tensor shape
+            int outWidth = outputTensor.shape[3];
+            int outHeight = outputTensor.shape[2];
 
-            // Sentis 1.x RenderToTexture requires a RenderTexture
+            Debug.Log($"[AI Upscaler] AI Output Shape: {outWidth}x{outHeight}");
+
+            // 5. Convert Tensor back to Texture
             RenderTexture rt = new RenderTexture(outWidth, outHeight, 0, RenderTextureFormat.ARGB32);
             rt.enableRandomWrite = true;
             rt.Create();
 
-            TextureConverter.RenderToTexture(outputTensor, rt);
+            try 
+            {
+                TextureConverter.RenderToTexture(outputTensor, rt);
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"[AI Upscaler] RenderToTexture Failed: {e.Message}");
+                rt.Release();
+                return null;
+            }
 
-            // Copy RenderTexture back to Texture2D to save it
+            // 6. Copy RenderTexture back to Texture2D
             Texture2D resultTexture = new Texture2D(outWidth, outHeight, TextureFormat.RGBA32, false);
             RenderTexture.active = rt;
             resultTexture.ReadPixels(new Rect(0, 0, outWidth, outHeight), 0, 0);
