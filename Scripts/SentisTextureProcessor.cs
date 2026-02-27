@@ -24,68 +24,73 @@ namespace AiUpscaler.Runtime
         {
             if (inputTexture == null) return null;
 
-            // 1. Detect Model Input Shape
+            // Detect Model Input Shape (e.g., 128x128)
             var input = _runtimeModel.inputs[0];
-            int modelWidth = input.shape[3].IsMax ? inputTexture.width : input.shape[3].value;
-            int modelHeight = input.shape[2].IsMax ? inputTexture.height : input.shape[2].value;
+            int tileSize = input.shape[3].IsMax ? 512 : input.shape[3].value;
+            if (tileSize <= 0) tileSize = 512;
 
-            // Handle cases where model shape is fixed (e.g., 128x128)
-            if (modelWidth <= 0) modelWidth = 512; // Fallback
-            if (modelHeight <= 0) modelHeight = 512;
+            int inWidth = inputTexture.width;
+            int inHeight = inputTexture.height;
+            int outWidth = Mathf.RoundToInt(inWidth * scale);
+            int outHeight = Mathf.RoundToInt(inHeight * scale);
 
-            Debug.Log($"[AI Upscaler] Model Input Shape: {modelWidth}x{modelHeight}. Upscaling from {inputTexture.width}x{inputTexture.height}");
+            Debug.Log($"[AI Upscaler] Tiling Mode Start: {inWidth}x{inHeight} -> {outWidth}x{outHeight} using {tileSize}x{tileSize} patches.");
 
-            // 2. Convert Texture to Tensor (Auto-resizes if dimensions differ)
-            using TensorFloat inputTensor = TextureConverter.ToTensor(inputTexture, modelWidth, modelHeight, 3);
+            // Create final result texture
+            RenderTexture finalRT = new RenderTexture(outWidth, outHeight, 0, RenderTextureFormat.ARGB32);
+            finalRT.enableRandomWrite = true;
+            finalRT.Create();
 
-            // 3. Run Inference
-            try 
+            // Temp Texture to extract patches
+            Texture2D patchTex = new Texture2D(tileSize, tileSize, TextureFormat.RGBA32, false);
+
+            for (int y = 0; y < inHeight; y += tileSize)
             {
-                _engine.Execute(inputTensor);
+                for (int x = 0; x < inWidth; x += tileSize)
+                {
+                    int currentW = Mathf.Min(tileSize, inWidth - x);
+                    int currentH = Mathf.Min(tileSize, inHeight - y);
+
+                    // 1. Extract Patch
+                    Color[] pixels = inputTexture.GetPixels(x, y, currentW, currentH);
+                    patchTex.Reinitialize(currentW, currentH);
+                    patchTex.SetPixels(pixels);
+                    patchTex.Apply();
+
+                    // 2. To Tensor
+                    using TensorFloat inputTensor = TextureConverter.ToTensor(patchTex, currentW, currentH, 3);
+
+                    // 3. Inference
+                    _engine.Execute(inputTensor);
+                    TensorFloat outputTensor = _engine.PeekOutput() as TensorFloat;
+
+                    // 4. To Temp RT
+                    int patchOutW = outputTensor.shape[3];
+                    int patchOutH = outputTensor.shape[2];
+                    RenderTexture patchRT = new RenderTexture(patchOutW, patchOutH, 0, RenderTextureFormat.ARGB32);
+                    patchRT.enableRandomWrite = true;
+                    patchRT.Create();
+
+                    TextureConverter.RenderToTexture(outputTensor, patchRT);
+
+                    // 5. Blit to Final RT
+                    Graphics.CopyTexture(patchRT, 0, 0, 0, 0, patchOutW, patchOutH, finalRT, 0, 0, Mathf.RoundToInt(x * scale), Mathf.RoundToInt(y * scale));
+                    
+                    patchRT.Release();
+                    Object.DestroyImmediate(patchRT);
+                }
             }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[AI Upscaler] Inference Failed: {e.Message}\nTry a smaller texture or a lighter model.");
-                return null;
-            }
 
-            // 4. Get Result Tensor
-            TensorFloat outputTensor = _engine.PeekOutput() as TensorFloat;
-            if (outputTensor == null) return null;
-
-            // Calculate output dimensions based on output tensor shape
-            int outWidth = outputTensor.shape[3];
-            int outHeight = outputTensor.shape[2];
-
-            Debug.Log($"[AI Upscaler] AI Output Shape: {outWidth}x{outHeight}");
-
-            // 5. Convert Tensor back to Texture
-            RenderTexture rt = new RenderTexture(outWidth, outHeight, 0, RenderTextureFormat.ARGB32);
-            rt.enableRandomWrite = true;
-            rt.Create();
-
-            try 
-            {
-                TextureConverter.RenderToTexture(outputTensor, rt);
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogError($"[AI Upscaler] RenderToTexture Failed: {e.Message}");
-                rt.Release();
-                return null;
-            }
-
-            // 6. Copy RenderTexture back to Texture2D
+            // Copy Final RT to Texture2D
             Texture2D resultTexture = new Texture2D(outWidth, outHeight, TextureFormat.RGBA32, false);
-            RenderTexture.active = rt;
+            RenderTexture.active = finalRT;
             resultTexture.ReadPixels(new Rect(0, 0, outWidth, outHeight), 0, 0);
             resultTexture.Apply();
             RenderTexture.active = null;
 
-            // Cleanup
-            rt.Release();
-            if (Application.isEditor) Object.DestroyImmediate(rt);
-            else Object.Destroy(rt);
+            finalRT.Release();
+            Object.DestroyImmediate(finalRT);
+            Object.DestroyImmediate(patchTex);
 
             return resultTexture;
         }
