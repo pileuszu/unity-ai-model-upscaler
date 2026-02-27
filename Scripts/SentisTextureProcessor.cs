@@ -65,8 +65,23 @@ namespace AiUpscaler.Runtime
                     TensorFloat outputTensor = _engine.PeekOutput() as TensorFloat;
 
                     // 4. To Temp RT
-                    int patchOutW = outputTensor.shape[3];
-                    int patchOutH = outputTensor.shape[2];
+                    int patchOutW, patchOutH;
+                    if (outputTensor.shape.rank == 4)
+                    {
+                        patchOutW = outputTensor.shape[3];
+                        patchOutH = outputTensor.shape[2];
+                    }
+                    else if (outputTensor.shape.rank == 3)
+                    {
+                        patchOutW = outputTensor.shape[2];
+                        patchOutH = outputTensor.shape[1];
+                    }
+                    else
+                    {
+                        Debug.LogError($"[AI Upscaler] Unexpected output tensor rank: {outputTensor.shape.rank}. Expected 3 or 4.");
+                        continue;
+                    }
+
                     RenderTexture patchRT = new RenderTexture(patchOutW, patchOutH, 0, RenderTextureFormat.ARGB32);
                     patchRT.enableRandomWrite = true;
                     patchRT.Create();
