@@ -66,6 +66,8 @@ namespace AiUpscaler.Runtime
 
                     // 4. To Temp RT
                     int patchOutW, patchOutH;
+                    TensorFloat finalOutputTensor = outputTensor;
+
                     if (outputTensor.shape.rank == 4)
                     {
                         patchOutW = outputTensor.shape[3];
@@ -75,6 +77,8 @@ namespace AiUpscaler.Runtime
                     {
                         patchOutW = outputTensor.shape[2];
                         patchOutH = outputTensor.shape[1];
+                        // Sentis RenderToTexture requires Rank 4 (NCHW). Reshape CHW to 1CHW.
+                        finalOutputTensor = outputTensor.Reshape(new TensorShape(1, outputTensor.shape[0], outputTensor.shape[1], outputTensor.shape[2])) as TensorFloat;
                     }
                     else
                     {
@@ -86,7 +90,7 @@ namespace AiUpscaler.Runtime
                     patchRT.enableRandomWrite = true;
                     patchRT.Create();
 
-                    TextureConverter.RenderToTexture(outputTensor, patchRT);
+                    TextureConverter.RenderToTexture(finalOutputTensor, patchRT);
 
                     // 5. Blit to Final RT
                     Graphics.CopyTexture(patchRT, 0, 0, 0, 0, patchOutW, patchOutH, finalRT, 0, 0, Mathf.RoundToInt(x * scale), Mathf.RoundToInt(y * scale));
