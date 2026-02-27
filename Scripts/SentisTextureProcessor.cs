@@ -26,7 +26,7 @@ namespace AiUpscaler.Runtime
 
             // Detect Model Input Shape (e.g., 128x128)
             var input = _runtimeModel.inputs[0];
-            int tileSize = input.shape[3].IsMax ? 512 : input.shape[3].value;
+            int tileSize = input.shape[3].value > 0 ? input.shape[3].value : 512;
             if (tileSize <= 0) tileSize = 512;
 
             int inWidth = inputTexture.width;
