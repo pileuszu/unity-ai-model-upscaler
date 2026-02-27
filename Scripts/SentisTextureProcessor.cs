@@ -40,8 +40,24 @@ namespace AiUpscaler.Runtime
             int outWidth = Mathf.RoundToInt(inputTexture.width * scale);
             int outHeight = Mathf.RoundToInt(inputTexture.height * scale);
 
+            // Sentis 1.x RenderToTexture requires a RenderTexture
+            RenderTexture rt = new RenderTexture(outWidth, outHeight, 0, RenderTextureFormat.ARGB32);
+            rt.enableRandomWrite = true;
+            rt.Create();
+
+            TextureConverter.RenderToTexture(outputTensor, rt);
+
+            // Copy RenderTexture back to Texture2D to save it
             Texture2D resultTexture = new Texture2D(outWidth, outHeight, TextureFormat.RGBA32, false);
-            TextureConverter.RenderToTexture(outputTensor, resultTexture);
+            RenderTexture.active = rt;
+            resultTexture.ReadPixels(new Rect(0, 0, outWidth, outHeight), 0, 0);
+            resultTexture.Apply();
+            RenderTexture.active = null;
+
+            // Cleanup
+            rt.Release();
+            if (Application.isEditor) Object.DestroyImmediate(rt);
+            else Object.Destroy(rt);
 
             return resultTexture;
         }
