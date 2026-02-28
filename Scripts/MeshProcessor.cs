@@ -56,6 +56,7 @@ namespace AiUpscaler.Runtime
             TransferBlendShapes(originalMesh, subdividedMesh, midPointCache);
             
             subdividedMesh.RecalculateBounds();
+            subdividedMesh.RecalculateNormals(); // Crucial for fixing dark shading/black face issues
             subdividedMesh.RecalculateTangents();
 
             return subdividedMesh;

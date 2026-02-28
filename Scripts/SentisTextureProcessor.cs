@@ -20,9 +20,15 @@ namespace AiUpscaler.Runtime
             _engine = WorkerFactory.CreateWorker(BackendType.GPUCompute, _runtimeModel);
         }
 
-        public Texture2D UpscaleTexture(Texture2D inputTexture, float scale)
+        public Texture2D UpscaleTexture(Texture2D inputTexture, float scale, bool isNormalMap = false)
         {
             if (inputTexture == null) return null;
+
+            // For Normal Maps, AI SR often introduces artifacts. We use high-quality Bilinear instead.
+            if (isNormalMap)
+            {
+                return UpscaleBilinear(inputTexture, scale);
+            }
 
             // Detect Model Input Shape (e.g., 128x128)
             var input = _runtimeModel.inputs[0];
@@ -36,10 +42,13 @@ namespace AiUpscaler.Runtime
 
             Debug.Log($"[AI Upscaler] Tiling Mode Start: {inWidth}x{inHeight} -> {outWidth}x{outHeight} using {tileSize}x{tileSize} patches.");
 
-            // Create final result texture
+            // Create final result texture (ARGB32 to support Alpha)
             RenderTexture finalRT = new RenderTexture(outWidth, outHeight, 0, RenderTextureFormat.ARGB32);
             finalRT.enableRandomWrite = true;
             finalRT.Create();
+
+            // --- 1. Upscale Alpha separately to preserve transparency ---
+            RenderTexture alphaRT = UpscaleAlphaBilinear(inputTexture, outWidth, outHeight);
 
             // Tiling Settings with Overlap
             int padding = 12; // Context padding on each side
@@ -128,6 +137,9 @@ namespace AiUpscaler.Runtime
                 }
             }
 
+            // --- 2. Merge AI Result with Upscaled Alpha ---
+            MergeAlpha(finalRT, alphaRT);
+
             // Copy Final RT to Texture2D
             Texture2D resultTexture = new Texture2D(outWidth, outHeight, TextureFormat.RGBA32, false);
             RenderTexture.active = finalRT;
@@ -136,10 +148,63 @@ namespace AiUpscaler.Runtime
             RenderTexture.active = null;
 
             finalRT.Release();
+            alphaRT.Release();
             Object.DestroyImmediate(finalRT);
+            Object.DestroyImmediate(alphaRT);
             Object.DestroyImmediate(patchTex);
 
             return resultTexture;
+        }
+
+        private RenderTexture UpscaleAlphaBilinear(Texture2D source, int width, int height)
+        {
+            RenderTexture rt = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32);
+            rt.Create();
+            // Using a simple blit with bilinear filtering to upscale the original alpha
+            Graphics.Blit(source, rt);
+            return rt;
+        }
+
+        private void MergeAlpha(RenderTexture target, RenderTexture alphaSource)
+        {
+            Shader mergeShader = Shader.Find("Hidden/AiUpscaler/AlphaMerge");
+            if (mergeShader == null)
+            {
+                Debug.LogError("[AI Upscaler] AlphaMerge shader not found!");
+                return;
+            }
+
+            Material mergeMat = new Material(mergeShader);
+            mergeMat.SetTexture("_AlphaTex", alphaSource);
+
+            RenderTexture temp = RenderTexture.GetTemporary(target.width, target.height, 0, target.format);
+            Graphics.Blit(target, temp, mergeMat);
+            Graphics.Blit(temp, target);
+
+            RenderTexture.ReleaseTemporary(temp);
+            Object.DestroyImmediate(mergeMat);
+        }
+
+        private Texture2D UpscaleBilinear(Texture2D source, float scale)
+        {
+            int w = Mathf.RoundToInt(source.width * scale);
+            int h = Mathf.RoundToInt(source.height * scale);
+            RenderTexture rt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32);
+            rt.Create();
+
+            // Set filter mode to Bilinear for smooth upscaling
+            source.filterMode = FilterMode.Bilinear;
+            Graphics.Blit(source, rt);
+
+            Texture2D result = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            RenderTexture.active = rt;
+            result.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+            result.Apply();
+            RenderTexture.active = null;
+
+            rt.Release();
+            Object.DestroyImmediate(rt);
+            return result;
         }
 
         public void Release()
